@@ -124,6 +124,7 @@ struct DeviceConfig {
   String button1Topic, button2Topic, vibrationTopic;
   String mainMqttTopic; // Topic principal para ultrasonido
   int vibrationThreshold; // Umbral de sensibilidad para vibraciones
+  int vibrationMode; // 0=golpe (solo publica 1), 1=vibracion (publica 1 y 0)
 
   int connectionMode; // 0=Ethernet, 1=WiFi, 2=Bluetooth, 3=Dual ETH+WiFi, 4=Dual WiFi+BT
 };
@@ -189,6 +190,7 @@ SystemStatus systemStatus;
 struct FirmwareInfo {
   String version;
   String url;
+  String filesystemUrl;  // Nueva: URL del filesystem
   String checksum;
   bool mandatory;
   String release_notes;
@@ -198,6 +200,7 @@ bool checkForUpdates();
 bool checkForUpdatesSafe();
 bool performOTAUpdate(const FirmwareInfo& firmwareInfo);
 bool performSafeOTAUpdate(const FirmwareInfo& firmwareInfo);
+bool performFilesystemOTAUpdate(const String& filesystemUrl);
 String getCurrentFirmwareVersion();
 bool compareVersions(const String& current, const String& available);
 String calculateSHA256(const String& filePath);
@@ -293,9 +296,9 @@ void setup() {
   delay(500); // Pequeña pausa para que el monitor serie se estabilice
   Serial.println("\n\n--- INICIANDO MULTI-SENSOR IOT UNIVERSAL (WT32-ETH01) ---");
 
-  // RESET COMPLETO DE VARIABLES OTA (v1.6.8) - Forzar actualización sin backoff
+  // RESET COMPLETO DE VARIABLES OTA (v1.6.) - Forzar actualización sin backoff
   // IMPORTANTE: Las variables se resetean en otaTask() para evitar problemas de declaración
-  Serial.println("🔄 [RESET OTA] Las variables OTA se resetearán en otaTask() - v1.6.8");
+  Serial.println("🔄 [RESET OTA] Las variables OTA se resetearán en otaTask() - v1.6.");
   Serial.println("🔄 [RESET OTA] Backoff será eliminado - verificará inmediatamente");
 
   sensorMutex = xSemaphoreCreateMutex();
@@ -552,33 +555,50 @@ void readButtons() {
 
 void readVibrationSensor() {
   if (deviceConfig.sensorType == SENSOR_VIBRATION) {
-    // SENSOR DIGITAL SW-420 - Lectura digital (compatible con cualquier GPIO)
-    static unsigned long lastVibrationPublish = 0;  // Última vez que se publicó
-    static bool lastVibrationState = HIGH;           // Estado anterior del pin
+    // SENSOR DIGITAL SW-420 - Dos modos: GOLPE (0) o VIBRACION (1)
+    static unsigned long lastVibrationPublish = 0;
+    static bool lastVibrationState = HIGH;
 
     pinMode(deviceConfig.vibrationPin, INPUT_PULLUP);
     bool currentPinState = digitalRead(deviceConfig.vibrationPin);
 
-    // Detectar flanco de HIGH a LOW (inicio de vibración)
-    if (currentPinState == LOW && lastVibrationState == HIGH) {
-      // Solo publicar si ha pasado el cooldown desde la última publicación
-      if (millis() - lastVibrationPublish > deviceConfig.vibrationThreshold) {
-        lastVibrationPublish = millis();
-        vibrationState = true;
+    // MODO 0: GOLPE - Solo publica 1 al detectar el inicio del golpe
+    if (deviceConfig.vibrationMode == 0) {
+      // Detectar flanco de HIGH a LOW (inicio de golpe)
+      if (currentPinState == LOW && lastVibrationState == HIGH) {
+        if (millis() - lastVibrationPublish > deviceConfig.vibrationThreshold) {
+          lastVibrationPublish = millis();
+          vibrationState = true;
+          publishVibrationState(true);
+          Serial.println("📳 [VIBRATION] ¡GOLPE DETECTADO! (1) - Publicando a MQTT...");
+          Serial.println("📳 [VIBRATION] Topic: " + deviceConfig.vibrationTopic);
+        }
+      }
 
-        // Publicar detección de vibración
-        publishVibrationState(true);
-
-        // LOG DE DETECCIÓN
-        Serial.println("📳 [VIBRATION] ¡VIBRACIÓN DETECTADA! - Publicando a MQTT...");
-        Serial.println("📳 [VIBRATION] Topic: " + deviceConfig.vibrationTopic);
+      // Actualizar estado interno (no publica 0)
+      if (currentPinState == HIGH && lastVibrationState == LOW) {
+        vibrationState = false;
+        Serial.println("📳 [VIBRATION] Golpe finalizado - No se publica 0");
       }
     }
+    // MODO 1: VIBRACION - Publica 1 cuando vibra, 0 cuando para
+    else if (deviceConfig.vibrationMode == 1) {
+      // Detectar flanco HIGH->LOW (inicio vibración)
+      if (currentPinState == LOW && lastVibrationState == HIGH) {
+        if (millis() - lastVibrationPublish > 50) {
+          lastVibrationPublish = millis();
+          vibrationState = true;
+          publishVibrationState(true);
+          Serial.println("📳 [VIBRATION] Vibración detectada (1) - Publicando a MQTT...");
+        }
+      }
 
-    // Detectar fin de vibración (LOW a HIGH)
-    if (currentPinState == HIGH && lastVibrationState == LOW) {
-      vibrationState = false;
-      Serial.println("📳 [VIBRATION] Vibración finalizada");
+      // Detectar flanco LOW->HIGH (fin vibración)
+      if (currentPinState == HIGH && lastVibrationState == LOW) {
+        vibrationState = false;
+        publishVibrationState(false);
+        Serial.println("📳 [VIBRATION] Vibración finalizada (0) - Publicando a MQTT...");
+      }
     }
 
     lastVibrationState = currentPinState;
@@ -826,17 +846,17 @@ String pendingOtaUrl = "";      // Nueva: URL del firmware pendiente
 String pendingOtaChecksum = ""; // Nueva: Checksum del firmware pendiente
 
 void otaTask(void *pvParameters) {
-  // RESET COMPLETO DE VARIABLES OTA (v1.6.8) - Forzar actualización sin backoff
+  // RESET COMPLETO DE VARIABLES OTA (v1.6.) - Forzar actualización sin backoff
   otaInProgress = false;
   lastOTAAttempt = 0;  // IMPORTANTE: Resetear a 0 para evitar backoff
   otaFailureCount = 0; // IMPORTANTE: Resetear a 0 para evitar backoff
   otaUpdatePending = false;
   pendingOtaUrl = "";
   pendingOtaChecksum = "";
-  Serial.println("🔄 [RESET OTA] Variables OTA reseteadas completamente - v1.6.8");
+  Serial.println("🔄 [RESET OTA] Variables OTA reseteadas completamente - v1.6.");
   Serial.println("🔄 [RESET OTA] Backoff desactivado - verificará inmediatamente");
   Serial.println("=================================================");
-  Serial.println("🚀 OTA > INICIANDO SISTEMA DE ACTUALIZACIONES v1.6.8 [SIN BACKOFF]");
+  Serial.println("🚀 OTA > INICIANDO SISTEMA DE ACTUALIZACIONES v1.6. [SIN BACKOFF]");
   Serial.println("📊 OTA > Intervalo de verificación: " + String(ota_check_interval/1000) + " segundos");
   Serial.println("⏱️  OTA > Timeout de descarga: " + String(ota_timeout/1000) + " segundos");
   Serial.println("🔒 OTA > Modo seguro con reintentos exponenciales activado");
@@ -973,14 +993,14 @@ bool performOTAUpdate(const FirmwareInfo& firmwareInfo) {
   Serial.println(firmwareInfo.url);
 
   // Detener tareas críticas pero mantener MQTT activo para reportar estado
-  // vTaskSuspendAll(); // Comentado para evitar crash FreeRTOS (v1.6.8)
+  // vTaskSuspendAll(); // Comentado para evitar crash FreeRTOS (v1.6.)
 
   HTTPClient http;
   http.setTimeout(ota_timeout);
 
   if (!http.begin(firmwareInfo.url)) {
     Serial.println("OTA > No se pudo conectar al servidor de firmware");
-    // xTaskResumeAll(); // Comentado para evitar crash FreeRTOS (v1.6.8)
+    // xTaskResumeAll(); // Comentado para evitar crash FreeRTOS (v1.6.)
     return false;
   }
 
@@ -1015,7 +1035,7 @@ bool performOTAUpdate(const FirmwareInfo& firmwareInfo) {
 
   // Si la actualización falló, reanudar tareas
   if (!success) {
-    // xTaskResumeAll(); // Comentado para evitar crash FreeRTOS (v1.6.8)
+    // xTaskResumeAll(); // Comentado para evitar crash FreeRTOS (v1.6.)
     Serial.println("OTA > Actualización fallida, reanudando operaciones normales");
   }
 
@@ -1036,7 +1056,7 @@ bool performSafeOTAUpdate(const FirmwareInfo& firmwareInfo) {
   bool success = false;
 
   try {
-    // ACTUALIZACIÓN DIRECTA CON HTTPUpdate (v1.6.8) - Sin banderas pendientes
+    // ACTUALIZACIÓN DIRECTA CON HTTPUpdate (v1.6.) - Sin banderas pendientes
     Serial.println("OTA > Ejecutando actualización directa con HTTPUpdate...");
     Serial.printf("OTA > Memoria libre antes de actualizar: %d bytes\n", ESP.getFreeHeap());
 
@@ -1054,7 +1074,7 @@ bool performSafeOTAUpdate(const FirmwareInfo& firmwareInfo) {
       delay(500); // Esperar a que se detenga completamente
     }
 
-    // ACTUALIZACIÓN DIRECTA con Update (método ESP32 nativo) - v1.6.8
+    // ACTUALIZACIÓN DIRECTA con Update (método ESP32 nativo) - v1.6.
     Serial.println("OTA > 🔄 Iniciando actualización directa con Update...");
 
     // Crear HTTPClient para descarga
@@ -1105,7 +1125,7 @@ bool performSafeOTAUpdate(const FirmwareInfo& firmwareInfo) {
     }
 
     // Configurar headers
-    http.addHeader("User-Agent", "ESP32-OTA-Client/v1.6.8");
+    http.addHeader("User-Agent", "ESP32-OTA-Client/v1.6.");
 
     // Descargar y escribir firmware
     Serial.println("OTA > 🔄 Escribiendo firmware en partición OTA...");
@@ -1160,7 +1180,7 @@ bool checkForUpdatesSafe() {
     return false;
   }
 
-  // FORZAR VERIFICACIÓN INMEDIATA - SIN BACKOFF (v1.6.8)
+  // FORZAR VERIFICACIÓN INMEDIATA - SIN BACKOFF (v1.6.)
   unsigned long now = millis();
   otaInProgress = true;
   lastOTAAttempt = now;
@@ -1222,10 +1242,21 @@ bool checkForUpdatesSafe() {
       goto cleanup;
     }
 
-    // Extraer información del firmware
+    // Extraer información del firmware y filesystem
     FirmwareInfo firmwareInfo;
     firmwareInfo.version = doc["version"].as<String>();
-    firmwareInfo.url = doc["url"].as<String>();
+
+    // Soporte para formato antiguo (url) y nuevo (firmware/filesystem)
+    if (doc.containsKey("firmware")) {
+      // Formato nuevo: firmware y filesystem separados
+      firmwareInfo.url = doc["firmware"].as<String>();
+      firmwareInfo.filesystemUrl = doc["filesystem"].as<String>();
+    } else {
+      // Formato antiguo: solo url
+      firmwareInfo.url = doc["url"].as<String>();
+      firmwareInfo.filesystemUrl = "";
+    }
+
     firmwareInfo.checksum = doc["checksum"].as<String>();
     firmwareInfo.mandatory = doc["mandatory"] | false;
     firmwareInfo.release_notes = doc["release_notes"].as<String>();
@@ -1235,6 +1266,11 @@ bool checkForUpdatesSafe() {
     Serial.println("🔍 [DEBUG] Versión actual: " + currentVersion);
     Serial.println("🌐 [REMOTE] Versión disponible en servidor: " + firmwareInfo.version);
     Serial.println("📊 [COMPARE] " + currentVersion + " vs " + firmwareInfo.version);
+
+    // Mostrar info de filesystem si está disponible
+    if (firmwareInfo.filesystemUrl.length() > 0) {
+      Serial.println("📁 [FILESYSTEM] Actualización de filesystem disponible: " + firmwareInfo.filesystemUrl);
+    }
 
     // Si hay notas de lanzamiento, mostrarlas
     if (firmwareInfo.release_notes.length() > 0) {
@@ -1270,8 +1306,8 @@ bool checkForUpdatesSafe() {
     } else {
       Serial.println("🔍 [DEBUG] Firmware actualizado, no se necesita actualización");
       otaFailureCount = 0; // Resetear contador de fallos
-    lastOTAAttempt = 0; // Resetear timestamp para evitar backoff falso (v1.6.8) en éxito
-      lastOTAAttempt = 0; // Resetear timestamp para evitar backoff falso (v1.6.8)
+    lastOTAAttempt = 0; // Resetear timestamp para evitar backoff falso (v1.6.) en éxito
+      lastOTAAttempt = 0; // Resetear timestamp para evitar backoff falso (v1.6.)
       success = false;
     }
 
@@ -1287,7 +1323,7 @@ cleanup:
   if (success) {
     Serial.println("OTA > Actualización completada exitosamente");
     otaFailureCount = 0; // Resetear contador de fallos
-    lastOTAAttempt = 0; // Resetear timestamp para evitar backoff falso (v1.6.8)
+    lastOTAAttempt = 0; // Resetear timestamp para evitar backoff falso (v1.6.)
 
     // Esperar un momento antes de reiniciar
     vTaskDelay(2000 / portTICK_PERIOD_MS);
@@ -1361,6 +1397,13 @@ bool compareVersions(const String& current, const String& available) {
   Serial.printf("OTA > Versión actual: %d.%d.%d\n", current_major, current_minor, current_patch);
   Serial.printf("OTA > Versión disponible: %d.%d.%d\n", available_major, available_minor, available_patch);
 
+  // Debug: mostrar resultado de comparación
+  bool needsUpdate = (available_major > current_major) ||
+                      (available_major == current_major && available_minor > current_minor) ||
+                      (available_major == current_major && available_minor == current_minor && available_patch > current_patch);
+
+  Serial.printf("OTA > ¿Necesita actualización? %s\n", needsUpdate ? "SÍ" : "NO");
+
   // Comparar versiones
   if (available_major > current_major) return true;
   if (available_major == current_major && available_minor > current_minor) return true;
@@ -1424,6 +1467,7 @@ void loadConfiguration() {
   deviceConfig.vibrationTopic = preferences.getString("vibrationTopic", "sensor/vibration");
   deviceConfig.mainMqttTopic = preferences.getString("mainMqttTopic", "multi-sensor/iot");
   deviceConfig.vibrationThreshold = preferences.getInt("vibrThresh", 250); // 250ms = ~4 publicaciones/segundo
+  deviceConfig.vibrationMode = preferences.getInt("vibrationMode", 0); // 0=golpe, 1=vibracion
 
   // Cargar configuración WiFi
   wifiConfig.ssid = preferences.getString("wifiSSID", "");
@@ -1475,6 +1519,7 @@ void saveConfiguration() {
   preferences.putString("vibrationTopic", deviceConfig.vibrationTopic);
   preferences.putString("mainMqttTopic", deviceConfig.mainMqttTopic);
   preferences.putInt("vibrThresh", deviceConfig.vibrationThreshold);
+  preferences.putInt("vibrationMode", deviceConfig.vibrationMode);
 
   // Guardar configuración WiFi
   preferences.putString("wifiSSID", wifiConfig.ssid);
@@ -1571,6 +1616,7 @@ void resetToDefaults() {
   deviceConfig.vibrationTopic = "sensor/vibration";
   deviceConfig.mainMqttTopic = "multi-sensor/iot";
   deviceConfig.vibrationThreshold = 250; // 250ms = ~4 publicaciones/segundo
+  deviceConfig.vibrationMode = 0; // 0=golpe por defecto
 
   saveConfiguration();
   Serial.println("Configuración restablecida a valores por defecto");
@@ -2087,6 +2133,10 @@ void handleSaveConfig() {
     deviceConfig.vibrationThreshold = configServer->arg("vibrationThreshold").toInt();
   }
 
+  if (configServer->hasArg("vibrationMode")) {
+    deviceConfig.vibrationMode = configServer->arg("vibrationMode").toInt();
+  }
+
   
   // Validar configuración
   bool configValid = true;
@@ -2417,6 +2467,7 @@ String generateSystemStatusJSON() {
   json += "\"button1Invert\":" + String(deviceConfig.button1Invert ? "true" : "false") + ",";
   json += "\"button2Invert\":" + String(deviceConfig.button2Invert ? "true" : "false") + ",";
   json += "\"vibrationThreshold\":" + String(deviceConfig.vibrationThreshold) + ",";
+  json += "\"vibrationMode\":" + String(deviceConfig.vibrationMode) + ",";
   json += "\"button1Topic\":\"" + deviceConfig.button1Topic + "\",";
   json += "\"button2Topic\":\"" + deviceConfig.button2Topic + "\",";
   json += "\"vibrationTopic\":\"" + deviceConfig.vibrationTopic + "\",";

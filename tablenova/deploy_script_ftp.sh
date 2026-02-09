@@ -11,8 +11,11 @@ SERVER_PASSWORD="@BSLota2026"
 REMOTE_PATH="multi-sensor-iot"
 TRANSFER_METHOD="lftp"
 
-# 1. Obtener versión actual desde platformio.ini
-CURRENT_VERSION=$(grep "FW_VERSION=" platformio.ini | grep -oP '(?<=\")[^"]*(?=\")')
+# 1. Obtener versión actual desde platformio.ini (solo primera línea)
+CURRENT_VERSION=$(grep "FW_VERSION=" platformio.ini | head -1 | sed 's/.*FW_VERSION="*\([^"]*\)"*/\1/')
+
+# Limpiar posibles caracteres extra y escapes
+CURRENT_VERSION=$(echo "$CURRENT_VERSION" | sed 's/\\//g' | tr -d ' \r\n')
 
 if [ -z "$CURRENT_VERSION" ]; then
     echo "❌ Error: No se pudo leer la versión actual de platformio.ini"
@@ -29,6 +32,12 @@ NEW_VERSION="$MAJOR.$MINOR.$NEW_PATCH"
 echo "📍 Nueva versión: $NEW_VERSION"
 echo ""
 
+# 0. Clean ANTES de modificar archivos (evita errores de PlatformIO)
+echo "🧹 Limpiando build anterior..."
+pio run --target clean
+echo "✅ Clean completado"
+echo ""
+
 # 3. Actualizar platformio.ini
 echo "📝 Actualizando platformio.ini..."
 sed -i "s/-D FW_VERSION=\\\"[^\\\"]*\\\"/-D FW_VERSION=\\\"$NEW_VERSION\\\"/" platformio.ini
@@ -38,12 +47,6 @@ echo "✅ Versión actualizada en platformio.ini"
 echo "📝 Actualizando multi-sensor-iot.ino..."
 sed -i "s/v1\.[0-9]\+\.[0-9]\+/v$NEW_VERSION/g" src/multi-sensor-iot.ino
 echo "✅ Versión actualizada en multi-sensor-iot.ino"
-echo ""
-
-# 5. Clean
-echo "🧹 Limpiando build anterior..."
-pio run --target clean
-echo "✅ Clean completado"
 echo ""
 
 # 6. Compilar

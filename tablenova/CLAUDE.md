@@ -1,9 +1,9 @@
-# CLAUDE.md - Project Development Guide
+# CLAUDE.md
 
-This file provides essential guidance for Claude Code when working with the Multi-Sensor IoT Universal project.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
-Multi-Sensor IoT Universal - Professional ESP32 firmware supporting 4 sensor types with dual Ethernet/WiFi connectivity, web configuration, and OTA updates.
+Multi-Sensor IoT Universal - Professional ESP32 firmware for WT32-ETH01 with 4 sensor types support, dual Ethernet/WiFi connectivity, web configuration, and automatic OTA updates.
 
 ## Build and Development Commands
 
@@ -27,14 +27,20 @@ pio device monitor
 
 ### OTA Deployment
 ```bash
-# Deploy new version to OTA server
-./deploy_script_ftp.sh 1.1.0
+# Deploy new version (auto-increments patch version)
+./deploy_script_ftp.sh
 
-# This script:
-# 1. Copies .pio/build/esp32dev/firmware.bin to versioned file
-# 2. Uploads to ota.boisolo.com/multi-sensor-iot/
-# 3. Updates version.json with checksum
+# Or using Python script (includes filesystem support)
+python3 deploy_ota.py
 ```
+
+The deploy script:
+1. Reads current version from `platformio.ini` (FW_VERSION)
+2. Auto-increments patch version (X.Y.Z -> X.Y.Z+1)
+3. Updates version in `platformio.ini` and `multi-sensor-iot.ino`
+4. Runs clean build
+5. Uploads firmware to `ota.boisolo.com/multi-sensor-iot/`
+6. Creates and uploads `version.json` with SHA256 checksum
 
 ### Firmware Version Management
 - Update `FW_VERSION` in `platformio.ini` for each release
@@ -62,26 +68,32 @@ pio device monitor
 
 ### Key Architectural Components
 
+#### FreeRTOS Task Architecture
+```cpp
+// Core 0 - Sensor Task (10KB stack, priority 1)
+xTaskCreatePinnedToCore(sensorTask, "Sensor Task", 10000, NULL, 1, NULL, 0);
+
+// Core 1 - Network & OTA Tasks (10KB stack each)
+xTaskCreatePinnedToCore(mqttTask, "MQTT Task", 10000, NULL, 1, NULL, 1);
+xTaskCreatePinnedToCore(otaTask, "OTA Task", 10000, NULL, 2, NULL, 1);
+```
+
+- **sensorTask()**: Created only for SENSOR_ULTRASONIC type. Runs at 50ms intervals with median filtering (10 readings).
+- **mqttTask()**: Handles MQTT connection with exponential backoff reconnection (base 1s, max 10 attempts).
+- **otaTask()**: Checks for updates every 30 seconds (not 5 minutes as documentation elsewhere states).
+- **WebServer**: Dynamically created only in bridge/hotspot modes.
+
 #### Configuration System
-- **Persistent Storage**: ESP32 Preferences API (survives OTA updates)
+- **Persistent Storage**: ESP32 Preferences API with namespace "sensor-config" - survives OTA updates
 - **Web Panel**: HTML file served from LittleFS (`/data/config.html`)
 - **Multi-tab Interface**: Network, WiFi, Connection, MQTT, Device, Sensor, System
 - **Real-time Validation**: Client-side and server-side input validation
 
 #### OTA Update System
-- **Automatic Checking**: Every 5 minutes via HTTP to version.json
+- **Automatic Checking**: Every 30 seconds via HTTP to `version.json`
 - **Version Comparison**: Semantic versioning with rollback protection
 - **Safety Mechanisms**: Boot counting, checksum verification, automatic rollback
 - **Fail-safe**: Only applies updates after successful download and verification
-
-#### Multi-tasking Architecture
-```cpp
-// FreeRTOS tasks for concurrent operation
-- sensorTask(): Ultrasonic sensor readings (50ms intervals)
-- mqttTask(): MQTT connection management and publishing
-- otaTask(): Periodic update checking
-- Web Server: Configuration interface (when in bridge/hotspot mode)
-```
 
 #### LED Status Indication
 - **Green (GPIO 4)**: System OK - solid when Ethernet + MQTT connected
@@ -153,25 +165,24 @@ struct SystemStatus {
 
 ### Build Configuration
 - **Filesystem**: LittleFS for web content storage
-- **Libraries**: PubSubClient (MQTT), ArduinoJson (JSON parsing), ESP32WebServer
-- **Board Flags**: WT32-ETH01 specific Ethernet pin configuration
+- **Libraries**: PubSubClient (MQTT), ArduinoJson (JSON parsing), ESP32WebServer (fork)
+- **Board Flags**: WT32-ETH01 specific Ethernet pin configuration (LAN8720 PHY)
+
+### Build Environments
+- **esp32dev** (default): Production build with `-Os` optimization, debug level 3
+- **esp32dev_debug**: Debug build with `-O0` (no optimization), debug level 4, additional WiFi/HTTP debug flags
+
+```bash
+# Build with default environment
+pio run
+
+# Build with debug environment
+pio run -e esp32dev_debug
+```
 
 ## Development Patterns
 
-### Configuration Persistence
-- All settings stored in ESP32 Preferences namespace "sensor-config"
-- Changes survive OTA updates and device restarts
-- Factory reset available via web panel
-
-### Error Handling
-- Comprehensive logging with structured event format
-- Graceful degradation when network/MQTT unavailable
-- LED-based error indication for field diagnostics
-
-### Safety Mechanisms
-- OTA updates require successful download before installation
-- Boot count protection prevents boot loops
-- Configuration validation prevents invalid network/MQTT settings
+### Adding New Sensor Types
 
 ## GPIO Pin Assignments (WT32-ETH01)
 ```
@@ -187,10 +198,11 @@ GPIO 32: Sensor de vibraciones SW-420
 ```
 
 ## OTA Server Configuration
-- **Server**: ota.boisolo.com/multi-sensor-iot/
-- **Version File**: `version.json` with firmware metadata
+- **Server**: `ota.boisolo.com/multi-sensor-iot/`
+- **Version File**: `version.json` with firmware metadata (includes version, url, checksum, mandatory flag)
 - **Firmware Path**: `/multi-sensor-iot/multi-sensor-iot-{version}.bin`
-- **Update Frequency**: Every 5 minutes (300,000ms)
+- **Update Frequency**: Every 30 seconds (30,000ms)
+- **Checksum**: SHA256 format in `version.json`
 
 ## Key Features Implementation
 
@@ -230,35 +242,35 @@ pio device monitor
 
 ### OTA Deployment Testing
 ```bash
-# Deploy to test server
-./deploy_script_ftp.sh test-version
+# Deploy to OTA server (auto-increments version)
+./deploy_script_ftp.sh
+
+# Or using Python script (includes filesystem support)
+python3 deploy_ota.py
 
 # Verify HTTP access
 curl -I http://ota.boisolo.com/multi-sensor-iot/version.json
-curl -I http://ota.boisolo.com/multi-sensor-iot/multi-sensor-iot-test-version.bin
 ```
 
-### Production Deployment
-```bash
-# Deploy production version
-./deploy_script_ftp.sh 1.1.0
+Note: Devices will check for updates within 30 seconds of the new version.json being uploaded.
 
-# Monitor OTA logs on devices
-# Check for automatic updates within 5 minutes
-```
+## Development Patterns
 
-## Important Notes
+### Adding New Sensor Types
+1. Add new enum value to `SensorType` in multi-sensor-iot.ino
+2. Add GPIO pin defines at top of file
+3. Extend `DeviceConfig` struct with sensor-specific settings
+4. Create dedicated sensor task function
+5. Add case in task creation switch statement
+6. Update web config.html with new sensor options
+7. Handle MQTT topic configuration for new sensor
 
-- **Bluetooth Removed**: Eliminated to optimize flash space (firmware now 79.9% of flash)
-- **Auto-Hotspot**: New feature for zero-configuration setup
-- **Connection Modes**: Three modes (Ethernet, WiFi, Dual) with web control
-- **Documentation Consolidated**: All .md files merged into comprehensive README.md
-- **Firmware Renamed**: Changed from medidor-altura-ultrasonido.ino to multi-sensor-iot.ino
+### Modifying Web Interface
+- Edit `data/config.html` for UI changes
+- After modifications, run `pio run --target uploadfs` to update filesystem
+- Web server only runs in bridge/hotspot modes (security feature)
 
-## Current Status
-- ✅ Compilation successful (1.04MB of 1.31MB flash)
-- ✅ WiFi + Ethernet control implemented
-- ✅ Web interface updated with connection modes
-- ✅ Auto-hotspot mode implemented
-- ✅ Persistent configuration across OTA
-- ✅ File renamed and documentation consolidated
+### Thread Safety
+- **sensorMutex**: SemaphoreHandle_t protecting shared sensor data
+- Used for synchronizing access to `readings[]`, `filteredValue`, and `newDataAvailable`
+- Always acquire mutex before reading/modifying shared sensor data in tasks
