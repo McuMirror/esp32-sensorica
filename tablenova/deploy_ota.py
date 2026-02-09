@@ -43,13 +43,18 @@ def increment_version(version):
 def update_version_in_ini(new_version):
     """Actualiza la versión en platformio.ini"""
     with open(PLATFORMIO_INI, 'r') as f:
-        content = f.read()
-
-    # Reemplazar todas las versiones (con o sin escapes)
-    content = re.sub(r'FW_VERSION=\\?"\d+\.\d+\.\d+\\?"', f'FW_VERSION=\\\\"{new_version}\\\\"', content)
+        lines = f.readlines()
 
     with open(PLATFORMIO_INI, 'w') as f:
-        f.write(content)
+        for line in lines:
+            # Reemplazar FW_VERSION="X.Y.Z" o FW_VERSION=\"X.Y.Z\"
+            if 'FW_VERSION=' in line and '=' in line:
+                # Buscar el patrón de versión entre comillas
+                match = re.search(r'FW_VERSION="?(\d+\.\d+\.\d+)"?', line)
+                if match:
+                    # Preservar el formato exacto de la línea (con o sin escapes)
+                    line = re.sub(r'FW_VERSION=?(\d+\.\d+\.\d+)"?', f'FW_VERSION=\\"{new_version}\\"', line)
+            f.write(line)
     print(f"✅ platformio.ini actualizado a v{new_version}")
 
 def update_version_in_source(new_version):

@@ -15,10 +15,11 @@
 #include <Preferences.h>
 
 enum SensorType {
-  SENSOR_ULTRASONIC = 0,    // HC-SR04 - Distancia
-  SENSOR_SINGLE_BUTTON = 1, // 1 Pulsador digital
-  SENSOR_DUAL_BUTTONS = 2,  // 2 Pulsadores digitales
-  SENSOR_VIBRATION = 3      // Sensor de vibraciones SW-420
+  SENSOR_ULTRASONIC = 0,        // HC-SR04 - Distancia
+  SENSOR_SINGLE_BUTTON = 1,     // 1 Pulsador digital
+  SENSOR_DUAL_BUTTONS = 2,      // 2 Pulsadores digitales
+  SENSOR_VIBRATION = 3,         // Sensor de vibraciones SW-420
+  SENSOR_VIBRATION_BUTTON = 4   // Vibración + 1 Pulsador
 };
 
 enum ConnectionMode {
@@ -380,6 +381,7 @@ checkConfigButton();
     case SENSOR_SINGLE_BUTTON:
     case SENSOR_DUAL_BUTTONS:
     case SENSOR_VIBRATION:
+    case SENSOR_VIBRATION_BUTTON:
       Serial.println("Omitiendo tarea de sensor ultrasónico (tipo: " + String(deviceConfig.sensorType) + ")");
       break;
     default:
@@ -502,7 +504,7 @@ void sensorTask(void *pvParameters) {
 
 // Funciones de lectura de sensores
 void readButtons() {
-  if (deviceConfig.sensorType == SENSOR_SINGLE_BUTTON || deviceConfig.sensorType == SENSOR_DUAL_BUTTONS) {
+  if (deviceConfig.sensorType == SENSOR_SINGLE_BUTTON || deviceConfig.sensorType == SENSOR_DUAL_BUTTONS || deviceConfig.sensorType == SENSOR_VIBRATION_BUTTON) {
     // Leer Pulsador 1
     bool currentButton1State = digitalRead(deviceConfig.button1Pin);
 
@@ -523,6 +525,13 @@ void readButtons() {
       if (deviceConfig.debugMode) {
         Serial.print("DEBUG > Pulsador 1: ");
         Serial.println(button1State ? "PRESIONADO" : "SUELTO");
+      }
+      // Siempre mostrar para modo VIBRATION_BUTTON (para debugging)
+      if (deviceConfig.sensorType == SENSOR_VIBRATION_BUTTON) {
+        Serial.print("🔘 [BUTTON] Pulsador 1: ");
+        Serial.println(button1State ? "PRESIONADO (1)" : "SUELTO (0)");
+        Serial.print("   Topic: ");
+        Serial.println(deviceConfig.button1Topic);
       }
     }
 
@@ -554,7 +563,7 @@ void readButtons() {
 }
 
 void readVibrationSensor() {
-  if (deviceConfig.sensorType == SENSOR_VIBRATION) {
+  if (deviceConfig.sensorType == SENSOR_VIBRATION || deviceConfig.sensorType == SENSOR_VIBRATION_BUTTON) {
     // SENSOR DIGITAL SW-420 - Dos modos: GOLPE (0) o VIBRACION (1)
     static unsigned long lastVibrationPublish = 0;
     static bool lastVibrationState = HIGH;
@@ -1567,6 +1576,22 @@ void setupSensorPins() {
     case SENSOR_VIBRATION:
       Serial.println("Configurando sensor de vibraciones SW-420");
       pinMode(deviceConfig.vibrationPin, INPUT_PULLUP);
+      break;
+
+    case SENSOR_VIBRATION_BUTTON:
+      Serial.println("========================================");
+      Serial.println("Configurando VIBRACIÓN + 1 PULSADOR");
+      Serial.println("========================================");
+      Serial.print("  Pin Vibración: GPIO ");
+      Serial.println(deviceConfig.vibrationPin);
+      Serial.print("  Pin Pulsador 1: GPIO ");
+      Serial.println(deviceConfig.button1Pin);
+      Serial.print("  Topic Vibración: ");
+      Serial.println(deviceConfig.vibrationTopic);
+      Serial.print("  Topic Pulsador: ");
+      Serial.println(deviceConfig.button1Topic);
+      pinMode(deviceConfig.vibrationPin, INPUT_PULLUP);
+      pinMode(deviceConfig.button1Pin, INPUT_PULLUP);
       break;
 
     default:

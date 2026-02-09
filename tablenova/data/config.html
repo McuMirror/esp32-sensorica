@@ -343,6 +343,7 @@
                         <option value="1">🔘 1 Pulsador</option>
                         <option value="2">🔘🔘 2 Pulsadores</option>
                         <option value="3">📳 Sensor Vibración SW-420</option>
+                        <option value="4">📳🔘 Vibración + 1 Pulsador</option>
                     </select>
                 </div>
 
@@ -536,6 +537,10 @@
                     break;
                 case '3': // Sensor Vibración
                     document.getElementById('vibration-config').style.display = 'block';
+                    break;
+                case '4': // Vibración + 1 Pulsador
+                    document.getElementById('vibration-config').style.display = 'block';
+                    document.getElementById('single-button-config').style.display = 'block';
                     break;
             }
         }

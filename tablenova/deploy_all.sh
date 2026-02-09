@@ -14,13 +14,24 @@ echo "🧹 Limpiando build anterior..."
 pio run --target clean
 echo ""
 
-# 2. Compilar
+# 2. Compilar firmware
 echo "🔨 Compilando firmware..."
 pio run
 if [ $? -ne 0 ]; then
-    echo "❌ Error en la compilación"
+    echo "❌ Error en la compilación del firmware"
     exit 1
 fi
+echo "✅ Firmware compilado correctamente"
+echo ""
+
+# 2.5. Compilar filesystem
+echo "🔨 Compilando filesystem (config.html)..."
+pio run --target buildfs
+if [ $? -ne 0 ]; then
+    echo "❌ Error en la compilación del filesystem"
+    exit 1
+fi
+echo "✅ Filesystem compilado correctamente"
 echo ""
 
 # 3. Subir firmware
