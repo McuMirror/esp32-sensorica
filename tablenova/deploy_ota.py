@@ -23,12 +23,13 @@ SERVER_USER = "otaboisolo"
 SERVER_HOST = "ota.boisolo.com"
 SERVER_PASSWORD = "@BSLota2026"
 REMOTE_PATH = "multi-sensor-iot"
+PLATFORMIO_ENV = "esp32dev"  # Usar solo este entorno
 
 def get_current_version():
     """Lee la versión actual desde platformio.ini"""
     with open(PLATFORMIO_INI, 'r') as f:
         content = f.read()
-        # Buscar FW_VERSION="X.Y.Z" o FW_VERSION=\"X.Y.Z\"
+        # Buscar FW_VERSION=\"X.Y.Z\" (primera ocurrencia, en esp32dev)
         match = re.search(r'FW_VERSION=\\?"(\d+\.\d+\.\d+)\\?"', content)
         if match:
             return match.group(1)
@@ -41,20 +42,15 @@ def increment_version(version):
     return '.'.join(parts)
 
 def update_version_in_ini(new_version):
-    """Actualiza la versión en platformio.ini"""
+    """Actualiza la versión en platformio.ini (ambos entornos)"""
     with open(PLATFORMIO_INI, 'r') as f:
-        lines = f.readlines()
+        content = f.read()
+
+    # Reemplazar TODAS las apariciones de FW_VERSION
+    content = re.sub(r'FW_VERSION=\\?"\d+\.\d+\.\d+\\?"', f'FW_VERSION=\\"{new_version}\\"', content)
 
     with open(PLATFORMIO_INI, 'w') as f:
-        for line in lines:
-            # Reemplazar FW_VERSION="X.Y.Z" o FW_VERSION=\"X.Y.Z\"
-            if 'FW_VERSION=' in line and '=' in line:
-                # Buscar el patrón de versión entre comillas
-                match = re.search(r'FW_VERSION="?(\d+\.\d+\.\d+)"?', line)
-                if match:
-                    # Preservar el formato exacto de la línea (con o sin escapes)
-                    line = re.sub(r'FW_VERSION=?(\d+\.\d+\.\d+)"?', f'FW_VERSION=\\"{new_version}\\"', line)
-            f.write(line)
+        f.write(content)
     print(f"✅ platformio.ini actualizado a v{new_version}")
 
 def update_version_in_source(new_version):
@@ -78,6 +74,12 @@ def run_command(cmd, description):
         return False
     return True
 
+def run_command_live(cmd, description):
+    """Ejecuta un comando mostrando salida en tiempo real"""
+    print(f"\n{description}...")
+    result = subprocess.run(cmd, shell=True)
+    return result.returncode == 0
+
 def main():
     print("=" * 50)
     print("  OTA DEPLOY - Multi-Sensor IoT Universal")
@@ -94,21 +96,22 @@ def main():
     new_version = increment_version(current_version)
     print(f"📍 Nueva versión: {new_version}")
 
-    # 3. Actualizar archivos (ANTES del clean para evitar problemas)
+    # 3. Actualizar archivos
     update_version_in_ini(new_version)
     update_version_in_source(new_version)
 
-    # 4. Clean DESPUÉS de actualizar
-    if not run_command("pio run --target clean", "🧹 Limpiando build anterior"):
-        sys.exit(1)
+    # 4. Limpiar cache de PlatformIO (para evitar errores de compilación)
+    print("\n🧹 Limpiando build anterior...")
+    # Usar pio clean en lugar de rm para evitar problemas
+    subprocess.run(f"pio run -e {PLATFORMIO_ENV} --target clean", shell=True)
     print("✅ Clean completado")
 
     # Pequeño delay para que el sistema de archivos se estabilice
     time.sleep(1)
 
-    # 5. Compilar
+    # 5. Compilar firmware
     print("\n🔨 Compilando firmware...")
-    if not run_command("pio run", "Compilando"):
+    if not run_command_live(f"pio run -e {PLATFORMIO_ENV}", "Compilando firmware"):
         print("❌ Error en la compilación")
         # Restaurar versión original
         update_version_in_ini(current_version)
@@ -118,8 +121,7 @@ def main():
 
     # 5.5. Compilar filesystem
     print("\n🔨 Compilando filesystem (config.html)...")
-    # Ejecutar build del filesystem sin subir
-    if not run_command("pio run --target buildfs", "Compilando filesystem"):
+    if not run_command_live(f"pio run -e {PLATFORMIO_ENV} --target buildfs", "Compilando filesystem"):
         print("⚠️ Advertencia: Error al compilar filesystem")
     else:
         print("✅ Filesystem compilado")
@@ -127,18 +129,28 @@ def main():
     # 6. Verificar firmware
     if not os.path.exists(FIRMWARE_PATH):
         print(f"❌ Error: No se encontró {FIRMWARE_PATH}")
+        print("ℹ️ Intenta compilar manualmente: pio run -e esp32dev")
+        # Restaurar versión original
+        update_version_in_ini(current_version)
+        update_version_in_source(current_version)
         sys.exit(1)
 
-    # 7. Subir al servidor
+    firmware_size = os.path.getsize(FIRMWARE_PATH)
+    print(f"✅ Firmware encontrado: {firmware_size} bytes")
+
+    # 7. Subir firmware al servidor
     versioned_firmware = f"multi-sensor-iot-{new_version}.bin"
     print(f"\n📤 Subiendo firmware al servidor...")
     print(f"   Origen: {FIRMWARE_PATH}")
     print(f"   Destino: {versioned_firmware}")
 
-    # Usar lftp
     lftp_cmd = f"""lftp -u "{SERVER_USER}@{SERVER_HOST},{SERVER_PASSWORD}" -e "set ssl:verify-certificate no; cd {REMOTE_PATH}; put {FIRMWARE_PATH} -o {versioned_firmware}; quit" {SERVER_HOST}"""
 
     if not run_command(lftp_cmd, "Subiendo firmware"):
+        print("❌ Error subiendo firmware")
+        # Restaurar versión original
+        update_version_in_ini(current_version)
+        update_version_in_source(current_version)
         sys.exit(1)
     print("✅ Firmware subido exitosamente")
 
@@ -149,13 +161,18 @@ def main():
     print(f"   Destino: {versioned_filesystem}")
 
     if os.path.exists(FILESYSTEM_PATH):
+        fs_size = os.path.getsize(FILESYSTEM_PATH)
+        print(f"   Tamaño: {fs_size} bytes")
         lftp_cmd_fs = f"""lftp -u "{SERVER_USER}@{SERVER_HOST},{SERVER_PASSWORD}" -e "set ssl:verify-certificate no; cd {REMOTE_PATH}; put {FILESYSTEM_PATH} -o {versioned_filesystem}; quit" {SERVER_HOST}"""
         if run_command(lftp_cmd_fs, "Subiendo filesystem"):
             print("✅ Filesystem subido exitosamente")
+        else:
+            print("⚠️ Error subiendo filesystem, continuando...")
     else:
         print("⚠️ Advertencia: No se encontró el archivo filesystem, omitiendo...")
 
     # 8. Crear y subir version.json
+    print(f"\n📊 Creando version.json...")
     with open(FIRMWARE_PATH, 'rb') as f:
         firmware_data = f.read()
         checksum = "sha256:" + hashlib.sha256(firmware_data).hexdigest()
@@ -166,18 +183,21 @@ def main():
         "filesystem": f"{SERVER_URL}/{versioned_filesystem}" if os.path.exists(FILESYSTEM_PATH) else None,
         "checksum": checksum,
         "mandatory": False,
-        "release_notes": f"Multi-Sensor IoT Universal v{new_version} - {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        "release_date": datetime.datetime.now().strftime('%Y-%m-%d %H:%M'),
+        "changelog": f"Multi-Sensor IoT Universal v{new_version}"
     }
 
     with open("version.json", 'w') as f:
         json.dump(version_json, f, indent=2)
 
-    print(f"\n📤 Subiendo version.json...")
+    print(f"📤 Subiendo version.json...")
     lftp_cmd = f'lftp -u "{SERVER_USER}@{SERVER_HOST},{SERVER_PASSWORD}" -e "set ssl:verify-certificate no; cd {REMOTE_PATH}; put version.json; quit" {SERVER_HOST}'
-    run_command(lftp_cmd, "Subiendo version.json")
+    if run_command(lftp_cmd, "Subiendo version.json"):
+        print("✅ version.json subido")
 
     # 9. Limpiar
-    os.remove("version.json")
+    if os.path.exists("version.json"):
+        os.remove("version.json")
     print("\n🧹 Limpieza completada")
 
     print("\n" + "=" * 50)
@@ -185,7 +205,7 @@ def main():
     print("=" * 50)
     print(f"📋 Versión: {current_version} → {new_version}")
     print(f"📋 URL: {SERVER_URL}/{versioned_firmware}")
-    print(f"⏰ Los dispositivos se actualizarán en ~5 min\n")
+    print(f"⏰ Los dispositivos se actualizarán en ~30 segundos\n")
 
 if __name__ == "__main__":
     main()

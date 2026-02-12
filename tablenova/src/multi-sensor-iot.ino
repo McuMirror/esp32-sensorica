@@ -887,6 +887,14 @@ void otaTask(void *pvParameters) {
     // Incrementar contador
     checkCount++;
 
+    // IMPORTANTE: NO verificar actualizaciones en modo bridge o hotspot
+    if (bridgeMode || hotspotMode) {
+      if (checkCount % 10 == 0) { // Mostrar mensaje cada 10 checks para no spammear
+        Serial.println("🔒 OTA > Modo config activo (" + String(bridgeMode ? "Bridge" : "Hotspot") + "), OTA pausado");
+      }
+      continue;
+    }
+
     // No verificar actualizaciones si ya hay una en curso o hay demasiados fallos recientes
     if (otaInProgress || otaFailureCount >= 3) {
       if (otaFailureCount >= 3) {
@@ -897,7 +905,8 @@ void otaTask(void *pvParameters) {
     }
 
     // Esperar a que haya conexión (Ethernet o WiFi) antes de verificar actualizaciones
-    bool networkConnected = (eth_connected || WiFi.status() == WL_CONNECTED);
+    // IMPORTANTE: En modo hotspot, WiFi.status() == WL_CONNECTED es true pero es el AP, no cliente
+    bool networkConnected = (eth_connected || (WiFi.status() == WL_CONNECTED && !hotspotMode));
 
     if (!networkConnected) {
       Serial.println("📶 OTA > [" + String(checkCount) + "] Sin conexión de red, esperando...");
